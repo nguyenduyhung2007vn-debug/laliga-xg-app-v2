@@ -157,7 +157,7 @@ def apply_dark_theme(fig, title=None):
 BASE_DIR = Path(__file__).resolve().parent
 DATA_FILE = BASE_DIR / "matches_laliga_clean.csv"
 NEW_DATA_FILE = BASE_DIR / "matches_laliga_new_clean.csv"
-# Khối 2: Hàm Cào dữ liệu tự động & Tiền xử lý 15 đặc trưng
+# Khối 2: Hàm Cào dữ liệu tự động (Understat API) & Tiền xử lý 15 đặc trưng
 import urllib.request
 import http.cookiejar
 import json
@@ -197,11 +197,9 @@ def crawl_and_merge_fbref(old_csv_path, new_csv_path):
         matches_data = None
 
         try:
-            # Bước 1: Mở trang chính để lấy Cookie phiên làm việc hợp lệ
             req_page = urllib.request.Request(page_url, headers={"User-Agent": user_agent})
             html = opener.open(req_page, timeout=15).read().decode("utf-8")
 
-            # Bước 2: Thử gọi API JSON trực tiếp của Understat (chuẩn mới 2025-2026)
             try:
                 req_api = urllib.request.Request(
                     api_url,
@@ -219,7 +217,6 @@ def crawl_and_merge_fbref(old_csv_path, new_csv_path):
             except Exception:
                 pass
 
-            # Bước 3: Dự phòng trích xuất trực tiếp từ mã nguồn HTML nếu API không trả về
             if not matches_data:
                 match = re.search(r"datesData\s*=\s*JSON\.parse\('([^']+)'\)", html)
                 if match:
@@ -271,6 +268,64 @@ def crawl_and_merge_fbref(old_csv_path, new_csv_path):
     added_matches = (len(combined) - len(old_df)) // 2
     return True, f"Đã cào tự động {added_matches} trận thực tế mới! Tổng: {len(combined):,} dòng."
 
+@st.cache_data
+def load_and_process_data(file_path):
+    df = pd.read_csv(file_path)
+    df.columns = df.columns.str.strip().str.lower()
+    df = df.drop(columns=["unnamed: 0", "notes"], errors="ignore")
+
+    df["team"] = df["team"].astype(str).str.strip().replace(TEAM_NAME_MAP)
+    df["opponent"] = df["opponent"].astype(str).str.strip().replace(TEAM_NAME_MAP)
+
+    df["venue"] = df["venue"].astype(str).str.strip().str.lower().replace({
+        "home": "Home", "h": "Home", "away": "Away", "a": "Away"
+    })
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+
+    for col in ["xg", "xga", "gf", "ga", "sh", "sot", "season"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    df = df.dropna(subset=["team", "venue", "opponent", "xg", "xga", "gf", "ga", "date"]).copy()
+    df = df[df["venue"].isin(["Home", "Away"])].sort_values(["date", "team"]).reset_index(drop=True)
+
+    df["is_home"] = (df["venue"] == "Home").astype(int)
+
+    df["xg_avg5"] = df.groupby("team")["xg"].transform(lambda x: x.shift(1).rolling(5, min_periods=1).mean())
+    df["xga_avg5"] = df.groupby("team")["xga"].transform(lambda x: x.shift(1).rolling(5, min_periods=1).mean())
+    df["goals_avg5"] = df.groupby("team")["gf"].transform(lambda x: x.shift(1).rolling(5, min_periods=1).mean())
+    df["goals_against_avg5"] = df.groupby("team")["ga"].transform(lambda x: x.shift(1).rolling(5, min_periods=1).mean())
+    df["sot_avg5"] = df.groupby("team")["sot"].transform(lambda x: x.shift(1).rolling(5, min_periods=1).mean())
+    df["xg_avg3"] = df.groupby("team")["xg"].transform(lambda x: x.shift(1).rolling(3, min_periods=1).mean())
+    df["net_xg_avg5"] = df["xg_avg5"] - df["xga_avg5"]
+
+    df["matches_seen"] = df.groupby("team").cumcount()
+    df["short_history"] = (df["matches_seen"] < 5).astype(int)
+
+    opp_df = df[["date", "team", "opponent", "xg_avg5", "xga_avg5", "matches_seen", "short_history"]].copy()
+    opp_df = opp_df.rename(columns={
+        "team": "opponent", "opponent": "team",
+        "xg_avg5": "opponent_xg_avg5", "xga_avg5": "opponent_xga_avg5",
+        "matches_seen": "opponent_matches_seen", "short_history": "opponent_short_history"
+    })
+
+    final_df = pd.merge(df, opp_df, on=["date", "team", "opponent"], how="left")
+    final_df["attack_defense_index"] = (final_df["xg_avg5"] + final_df["opponent_xga_avg5"]) / 2
+
+    feature_cols = [
+        "xg_avg5", "xga_avg5", "goals_avg5", "goals_against_avg5", "sot_avg5", "xg_avg3",
+        "opponent_xg_avg5", "opponent_xga_avg5", "is_home", "matches_seen", "short_history",
+        "opponent_matches_seen", "opponent_short_history", "net_xg_avg5", "attack_defense_index"
+    ]
+
+    max_season = final_df["season"].max()
+    train_mask = final_df["season"] < max_season
+    train_medians = final_df.loc[train_mask, feature_cols].median() if train_mask.any() else final_df[feature_cols].median()
+
+    for col in feature_cols:
+        final_df[col] = final_df[col].fillna(train_medians[col])
+
+    return final_df, feature_cols
 
 # Khối 3: Huấn luyện mô hình ML & Hàm mô phỏng Poisson
 @st.cache_resource
