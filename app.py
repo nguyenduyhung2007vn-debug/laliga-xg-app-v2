@@ -175,7 +175,8 @@ def crawl_and_merge_fbref(old_csv_path, new_csv_path):
 
     new_rows = []
     # Cào dữ liệu mùa 2025 (2025/26) và mùa 2026 (2026/27) từ Understat
-    for yr in:
+    current_year = pd.Timestamp.now().year
+    for yr in range(2025, current_year + 1):
         url = f"https://understat.com{yr}"
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
