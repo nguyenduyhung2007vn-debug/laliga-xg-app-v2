@@ -579,11 +579,11 @@ try:
                 home_matches_test["team"] + " vs " + home_matches_test["opponent"]
             )
             chosen_match = st.selectbox(f"Chọn trận đấu thực tế trong tập Test (Mùa {test_season}):", home_matches_test["label"].tolist())
-            h_row = home_matches_test[home_matches_test["label"] == chosen_match].iloc
+            h_row = home_matches_test[home_matches_test["label"] == chosen_match].head(1).squeeze()
             home_team = h_row["team"]
             away_team = h_row["opponent"]
 
-            a_row = test_df[(test_df["date"] == h_row["date"]) & (test_df["team"] == away_team) & (test_df["venue"] == "Away")].iloc
+            a_row = test_df[(test_df["date"] == h_row["date"]) & (test_df["team"] == away_team) & (test_df["venue"] == "Away")].head(1).squeeze()
             home_features = pd.DataFrame([h_row[feature_cols].to_dict()])
             away_features = pd.DataFrame([a_row[feature_cols].to_dict()])
 
