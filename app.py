@@ -674,18 +674,20 @@ try:
         st.dataframe(display_df, use_container_width=True)
 
     # ------------------ TRANG 4: MODEL EVALUATION ------------------
-    elif page == "🤖 Đánh giá Mô hình Học máy":
+        elif page == "🤖 Đánh giá Mô hình Học máy":
         st.title("🤖 THỰC NGHIỆM VÀ ĐÁNH GIÁ ĐỘ CHÍNH XÁC MÔ HÌNH")
         st.markdown(f"Kết quả kiểm thử độc lập trên **mùa giải {test_season}** ({len(X_test)} bản ghi đội–trận, tương ứng {len(X_test)//2} trận đấu).")
 
         st.subheader("📊 Bảng đối chiếu sai số giữa các thuật toán")
+        ordered_names = sorted(model_metrics, key=lambda k: model_metrics.get(k).get("MAE"))
         metrics_data = []
-        for model_name, score in sorted(model_metrics.items(), key=lambda item: item.get("MAE", 999)):
+        for model_name in ordered_names:
+            score = model_metrics.get(model_name)
             metrics_data.append({
                 "Thuật toán mô hình": model_name,
-                "MAE (Sai số tuyệt đối TB)": f"{score['MAE']:.4f}",
-                "RMSE (Sai số bình phương TB)": f"{score['RMSE']:.4f}",
-                "R² (Hệ số xác định)": f"{score['R2']:.4f}",
+                "MAE (Sai số tuyệt đối TB)": f"{score.get('MAE'):.4f}",
+                "RMSE (Sai số bình phương TB)": f"{score.get('RMSE'):.4f}",
+                "R² (Hệ số xác định)": f"{score.get('R2'):.4f}",
                 "Trạng thái": "🏆 Tối ưu nhất" if model_name == best_model_name else "Đối chiếu"
             })
         metrics_df = pd.DataFrame(metrics_data)
