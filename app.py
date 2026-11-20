@@ -147,131 +147,88 @@ def apply_dark_theme(fig, title=None):
 BASE_DIR = Path(__file__).resolve().parent
 DATA_FILE = BASE_DIR / "matches_laliga_clean.csv"
 NEW_DATA_FILE = BASE_DIR / "matches_laliga_new_clean.csv"
-# Khối 2: Hàm Cào dữ liệu tự động từ FBref & Tiền xử lý 15 đặc trưng
+import urllib.request
+import json
+import re
+
 TEAM_NAME_MAP = {
     "Atlético Madrid": "Atletico Madrid",
     "Alavés": "Alaves",
     "Leganés": "Leganes",
     "Cádiz": "Cadiz",
     "Almería": "Almeria",
-    "Betis": "Real Betis"
+    "Betis": "Real Betis",
+    "Real Valladolid": "Valladolid",
+    "RCD Espanyol": "Espanyol",
+    "Celta Vigo": "Celta Vigo",
+    "Rayo Vallecano": "Rayo Vallecano",
+    "Athletic Club": "Athletic Club",
+    "Real Sociedad": "Real Sociedad"
 }
 
 def crawl_and_merge_fbref(old_csv_path, new_csv_path):
-    """Cào dữ liệu mới từ FBref (mùa 2025/26 & 2026/27) và gộp với file gốc."""
-    urls = [
-        (2025, "https://fbref.com"),
-        (2026, "https://fbref.com")
-    ]
-    new_parts = []
-    for yr, url in urls:
-        try:
-            tables = pd.read_html(url, storage_options={"User-Agent": "Mozilla/5.0"})
-            raw = tables.dropna(subset=["Date", "Home", "Away", "Score"]).copy()
-            raw = raw[raw["Date"].astype(str) != "Date"].copy()
-            xg_cols = [c for c in raw.columns if str(c).strip().startswith("xG")]
-            if len(xg_cols) >= 2:
-                h_xg_c, a_xg_c = xg_cols, xg_cols
-                raw = raw.dropna(subset=[h_xg_c, a_xg_c]).copy()
-                scores = raw["Score"].astype(str).str.replace("–", "-").str.split("-", expand=True)
-                raw["hgf"] = pd.to_numeric(scores, errors="coerce")
-                raw["agf"] = pd.to_numeric(scores, errors="coerce")
-                raw = raw.dropna(subset=["hgf", "agf"]).copy()
-
-                rows = []
-                for _, r in raw.iterrows():
-                    d_str = pd.to_datetime(r["Date"]).strftime("%Y-%m-%d")
-                    ht, at = str(r["Home"]).strip(), str(r["Away"]).strip()
-                    hg, ag = int(r["hgf"]), int(r["agf"])
-                    hx, ax = float(r[h_xg_c]), float(r[a_xg_c])
-                    rows.append({"season": yr, "date": d_str, "team": ht, "opponent": at, "venue": "Home",
-                                 "result": "W" if hg > ag else ("L" if hg < ag else "D"),
-                                 "gf": hg, "ga": ag, "xg": hx, "xga": ax, "sh": np.nan, "sot": np.nan})
-                    rows.append({"season": yr, "date": d_str, "team": at, "opponent": ht, "venue": "Away",
-                                 "result": "W" if ag > hg else ("L" if ag < hg else "D"),
-                                 "gf": ag, "ga": hg, "xg": ax, "xga": hx, "sh": np.nan, "sot": np.nan})
-                if rows:
-                    new_parts.append(pd.DataFrame(rows))
-        except Exception:
-            continue
-
-    if not new_parts:
-        return False, "FBref đang giới hạn truy cập tự động từ server. Hãy dùng form nhập tay bên dưới!"
-
+    """Tự động cào dữ liệu mới nhất từ Understat (La Liga) và nối vào sau 4.700 dòng gốc."""
     old_df = pd.read_csv(old_csv_path)
     old_df.columns = old_df.columns.str.strip().str.lower()
     old_df["date"] = pd.to_datetime(old_df["date"]).dt.strftime("%Y-%m-%d")
+    last_date = old_df["date"].max()  # Mốc cuối của dữ liệu gốc (2025-09-30)
 
-    combined = pd.concat([old_df] + new_parts, ignore_index=True)
+    new_rows = []
+    # Cào dữ liệu mùa 2025 (2025/26) và mùa 2026 (2026/27) từ Understat
+    for yr in:
+        url = f"https://understat.com{yr}"
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            html = urllib.request.urlopen(req, timeout=15).read().decode("utf-8")
+            match = re.search(r"datesData\s*=\s*JSON\.parse\('([^']+)'\)", html)
+            if not match:
+                continue
+            raw_json = match.group(1).encode("utf-8").decode("unicode_escape")
+            matches_data = json.loads(raw_json)
+
+            for m in matches_data:
+                if not m.get("isResult"):
+                    continue  # Bỏ qua trận chưa đá
+                d_str = str(m["datetime"])[:10]
+                if d_str <= last_date:
+                    continue  # Chỉ lấy các trận mới diễn ra sau 30/09/2025
+
+                ht = TEAM_NAME_MAP.get(m["h"]["title"], m["h"]["title"])
+                at = TEAM_NAME_MAP.get(m["a"]["title"], m["a"]["title"])
+                hg, ag = int(m["goals"]["h"]), int(m["goals"]["a"])
+                hx, ax = round(float(m["xG"]["h"]), 2), round(float(m["xG"]["a"]), 2)
+
+                new_rows.append({
+                    "season": yr, "date": d_str, "team": ht, "opponent": at, "venue": "Home",
+                    "result": "W" if hg > ag else ("L" if hg < ag else "D"),
+                    "gf": hg, "ga": ag, "xg": hx, "xga": ax, "sh": np.nan, "sot": np.nan
+                })
+                new_rows.append({
+                    "season": yr, "date": d_str, "team": at, "opponent": ht, "venue": "Away",
+                    "result": "W" if ag > hg else ("L" if ag < hg else "D"),
+                    "gf": ag, "ga": hg, "xg": ax, "xga": hx, "sh": np.nan, "sot": np.nan
+                })
+        except Exception:
+            continue
+
+    if not new_rows:
+        return False, "Không lấy được thêm trận mới nào hoặc kết nối mạng gián đoạn."
+
+    new_df = pd.DataFrame(new_rows)
+    combined = pd.concat([old_df, new_df], ignore_index=True)
     combined["team"] = combined["team"].astype(str).str.strip().replace(TEAM_NAME_MAP)
     combined["opponent"] = combined["opponent"].astype(str).str.strip().replace(TEAM_NAME_MAP)
     combined = combined.drop_duplicates(subset=["date", "team", "opponent"], keep="last").sort_values(["date", "team"]).reset_index(drop=True)
 
+    # Điền sh, sot bằng trung vị của từng đội
     for col in ["sh", "sot"]:
         if col in combined.columns:
             combined[col] = combined.groupby("team")[col].transform(lambda s: s.fillna(s.median())).fillna(combined[col].median())
 
     combined.to_csv(new_csv_path, index=False)
-    return True, f"Đã cập nhật thành công {len(combined):,} bản ghi ({len(combined)//2:,} trận)!"
+    added_matches = (len(combined) - len(old_df)) // 2
+    return True, f"Đã cào thêm {added_matches} trận mới! Tổng: {len(combined):,} bản ghi (Gốc: {len(old_df):,})."
 
-@st.cache_data
-def load_and_process_data(file_path):
-    df = pd.read_csv(file_path)
-    df.columns = df.columns.str.strip().str.lower()
-    df = df.drop(columns=["unnamed: 0", "notes"], errors="ignore")
-
-    df["team"] = df["team"].astype(str).str.strip().replace(TEAM_NAME_MAP)
-    df["opponent"] = df["opponent"].astype(str).str.strip().replace(TEAM_NAME_MAP)
-
-    df["venue"] = df["venue"].astype(str).str.strip().str.lower().replace({
-        "home": "Home", "h": "Home", "away": "Away", "a": "Away"
-    })
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
-
-    for col in ["xg", "xga", "gf", "ga", "sh", "sot", "season"]:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-
-    df = df.dropna(subset=["team", "venue", "opponent", "xg", "xga", "gf", "ga", "date"]).copy()
-    df = df[df["venue"].isin(["Home", "Away"])].sort_values(["date", "team"]).reset_index(drop=True)
-
-    df["is_home"] = (df["venue"] == "Home").astype(int)
-
-    df["xg_avg5"] = df.groupby("team")["xg"].transform(lambda x: x.shift(1).rolling(5, min_periods=1).mean())
-    df["xga_avg5"] = df.groupby("team")["xga"].transform(lambda x: x.shift(1).rolling(5, min_periods=1).mean())
-    df["goals_avg5"] = df.groupby("team")["gf"].transform(lambda x: x.shift(1).rolling(5, min_periods=1).mean())
-    df["goals_against_avg5"] = df.groupby("team")["ga"].transform(lambda x: x.shift(1).rolling(5, min_periods=1).mean())
-    df["sot_avg5"] = df.groupby("team")["sot"].transform(lambda x: x.shift(1).rolling(5, min_periods=1).mean())
-    df["xg_avg3"] = df.groupby("team")["xg"].transform(lambda x: x.shift(1).rolling(3, min_periods=1).mean())
-    df["net_xg_avg5"] = df["xg_avg5"] - df["xga_avg5"]
-
-    df["matches_seen"] = df.groupby("team").cumcount()
-    df["short_history"] = (df["matches_seen"] < 5).astype(int)
-
-    opp_df = df[["date", "team", "opponent", "xg_avg5", "xga_avg5", "matches_seen", "short_history"]].copy()
-    opp_df = opp_df.rename(columns={
-        "team": "opponent", "opponent": "team",
-        "xg_avg5": "opponent_xg_avg5", "xga_avg5": "opponent_xga_avg5",
-        "matches_seen": "opponent_matches_seen", "short_history": "opponent_short_history"
-    })
-
-    final_df = pd.merge(df, opp_df, on=["date", "team", "opponent"], how="left")
-    final_df["attack_defense_index"] = (final_df["xg_avg5"] + final_df["opponent_xga_avg5"]) / 2
-
-    feature_cols = [
-        "xg_avg5", "xga_avg5", "goals_avg5", "goals_against_avg5", "sot_avg5", "xg_avg3",
-        "opponent_xg_avg5", "opponent_xga_avg5", "is_home", "matches_seen", "short_history",
-        "opponent_matches_seen", "opponent_short_history", "net_xg_avg5", "attack_defense_index"
-    ]
-
-    max_season = final_df["season"].max()
-    train_mask = final_df["season"] < max_season
-    train_medians = final_df.loc[train_mask, feature_cols].median() if train_mask.any() else final_df[feature_cols].median()
-
-    for col in feature_cols:
-        final_df[col] = final_df[col].fillna(train_medians[col])
-
-    return final_df, feature_cols
 # Khối 3: Huấn luyện mô hình ML & Hàm mô phỏng Poisson
 @st.cache_resource
 def train_ml_models(df, feature_cols):
