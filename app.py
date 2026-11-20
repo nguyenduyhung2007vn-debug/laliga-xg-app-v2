@@ -680,7 +680,7 @@ try:
 
         st.subheader("📊 Bảng đối chiếu sai số giữa các thuật toán")
         metrics_data = []
-        for model_name, score in sorted(model_metrics.items(), key=lambda x: x["MAE"]):
+        for model_name, score in sorted(model_metrics.items(), key=lambda item: item.get("MAE", 999)):
             metrics_data.append({
                 "Thuật toán mô hình": model_name,
                 "MAE (Sai số tuyệt đối TB)": f"{score['MAE']:.4f}",
