@@ -562,8 +562,9 @@ try:
             actual_home_xg, actual_away_xg = float(h_row["xg"]), float(a_row["xg"])
             actual_gf, actual_ga = int(h_row["gf"]), int(a_row["gf"])
 
-        pred_home_xg = max(0.1, float(best_model.predict(home_features[feature_cols])))
-        pred_away_xg = max(0.1, float(best_model.predict(away_features[feature_cols])))
+        pred_home_xg = max(0.1, float(best_model.predict(home_features[feature_cols])[0]))
+        pred_away_xg = max(0.1, float(best_model.predict(away_features[feature_cols])[0]))
+
 
         st.markdown("---")
         st.subheader("⚔️ CHỈ SỐ BÀN THẮNG KỲ VỌNG DỰ BÁO (xG)")
