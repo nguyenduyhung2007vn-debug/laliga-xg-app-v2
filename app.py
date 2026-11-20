@@ -157,86 +157,104 @@ def apply_dark_theme(fig, title=None):
 BASE_DIR = Path(__file__).resolve().parent
 DATA_FILE = BASE_DIR / "matches_laliga_clean.csv"
 NEW_DATA_FILE = BASE_DIR / "matches_laliga_new_clean.csv"
-# Khối 2: Hàm Cào dữ liệu tự động (Understat API) & Tiền xử lý 15 đặc trưng
 import urllib.request
-import http.cookiejar
 import json
-import re
 
 TEAM_NAME_MAP = {
     "Atlético Madrid": "Atletico Madrid",
     "Alavés": "Alaves",
+    "Deportivo Alavés": "Alaves",
     "Leganés": "Leganes",
     "Cádiz": "Cadiz",
     "Almería": "Almeria",
     "Betis": "Real Betis",
+    "Real Betis": "Real Betis",
     "Real Valladolid": "Valladolid",
     "RCD Espanyol": "Espanyol",
     "Real Oviedo": "Oviedo",
-    "Deportivo Alaves": "Alaves",
-    "Athletic Bilbao": "Athletic Club"
+    "Athletic Club": "Athletic Club",
+    "RC Celta": "Celta Vigo",
+    "Celta Vigo": "Celta Vigo",
+    "Rayo Vallecano": "Rayo Vallecano",
+    "Real Sociedad": "Real Sociedad",
+    "RCD Mallorca": "Mallorca",
+    "Girona FC": "Girona",
+    "Sevilla FC": "Sevilla",
+    "Valencia CF": "Valencia",
+    "Getafe CF": "Getafe",
+    "CA Osasuna": "Osasuna",
+    "Villarreal CF": "Villarreal",
+    "FC Barcelona": "Barcelona",
+    "Real Madrid": "Real Madrid",
+    "Elche CF": "Elche",
+    "Levante UD": "Levante"
 }
 
-def crawl_and_merge_fbref(old_csv_path, new_csv_path):
-    """Tự động gọi API dữ liệu trận đấu thực tế của Understat ngay trên Streamlit Cloud."""
+@st.cache_data(ttl=3600)  # Tự động làm mới dữ liệu mỗi 1 giờ khi có người mở web
+def auto_sync_laliga_data(old_csv_path, new_csv_path):
+    """Tự động đồng bộ các trận La Liga mới nhất từ API ESPN mỗi khi mở web."""
     old_df = pd.read_csv(old_csv_path)
     old_df.columns = old_df.columns.str.strip().str.lower()
     old_df["date"] = pd.to_datetime(old_df["date"]).dt.strftime("%Y-%m-%d")
     last_date = old_df["date"].max()
 
-    cj = http.cookiejar.CookieJar()
-    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
-    user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+    # Tính trung bình xG/bàn thắng lịch sử của từng đội để quy đổi xG chuẩn xác nếu API chỉ trả về số cú sút
+    team_xg_avg = old_df.groupby("team")["xg"].mean().to_dict()
+    league_xg_avg = float(old_df["xg"].mean())
 
     new_rows = []
-    current_year = pd.Timestamp.now().year
+    # Quét lịch thi đấu & kết quả từ 2025-10-01 đến ngày hiện tại
+    date_ranges = ["20251001-20260630", "20260801-20270630"]
 
-    for yr in range(2025, current_year + 1):
-        page_url = f"https://understat.com{yr}"
-        api_url = f"https://understat.com{yr}"
-        matches_data = None
-
+    for dr in date_ranges:
+        url = f"https://espn.com{dr}&limit=500"
         try:
-            req_page = urllib.request.Request(page_url, headers={"User-Agent": user_agent})
-            html = opener.open(req_page, timeout=15).read().decode("utf-8")
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            data = json.loads(urllib.request.urlopen(req, timeout=15).read().decode("utf-8"))
 
-            try:
-                req_api = urllib.request.Request(
-                    api_url,
-                    headers={
-                        "User-Agent": user_agent,
-                        "Referer": page_url,
-                        "X-Requested-With": "XMLHttpRequest",
-                        "Accept": "application/json, text/javascript, */*; q=0.01"
-                    }
-                )
-                api_res = opener.open(req_api, timeout=15).read().decode("utf-8")
-                data_json = json.loads(api_res)
-                if "dates" in data_json:
-                    matches_data = data_json["dates"]
-            except Exception:
-                pass
-
-            if not matches_data:
-                match = re.search(r"datesData\s*=\s*JSON\.parse\('([^']+)'\)", html)
-                if match:
-                    raw_json = bytes(match.group(1), "utf-8").decode("unicode_escape")
-                    matches_data = json.loads(raw_json)
-
-            if not matches_data:
-                continue
-
-            for m in matches_data:
-                if not m.get("isResult"):
+            for ev in data.get("events", []):
+                status = ev.get("status", {}).get("type", {}).get("completed", False)
+                if not status:
                     continue
-                d_str = str(m["datetime"])[:10]
+
+                d_str = str(ev.get("date", ""))[:10]
                 if d_str <= last_date:
                     continue
 
-                ht = TEAM_NAME_MAP.get(m["h"]["title"], m["h"]["title"])
-                at = TEAM_NAME_MAP.get(m["a"]["title"], m["a"]["title"])
-                hg, ag = int(m["goals"]["h"]), int(m["goals"]["a"])
-                hx, ax = round(float(m["xG"]["h"]), 2), round(float(m["xG"]["a"]), 2)
+                yr = int(d_str[:4]) if int(d_str[5:7]) >= 8 else int(d_str[:4]) - 1
+                comp = ev.get("competitions", [{}])
+                competitors = comp.get("competitors", [])
+                if len(competitors) < 2:
+                    continue
+
+                home_c = next((c for c in competitors if c.get("homeAway") == "home"), competitors)
+                away_c = next((c for c in competitors if c.get("homeAway") == "away"), competitors)
+
+                raw_h = home_c.get("team", {}).get("displayName", "")
+                raw_a = away_c.get("team", {}).get("displayName", "")
+                ht = TEAM_NAME_MAP.get(raw_h, raw_h)
+                at = TEAM_NAME_MAP.get(raw_a, raw_a)
+
+                hg = int(float(home_c.get("score", 0)))
+                ag = int(float(away_c.get("score", 0)))
+
+                # Lấy xG nếu có trong statistics, nếu không thì ước lượng kết hợp bàn thắng & sức mạnh đội
+                def extract_stat(comp_obj, stat_name):
+                    for s in comp_obj.get("statistics", []):
+                        if s.get("name") == stat_name:
+                            try:
+                                return float(s.get("displayValue", 0))
+                            except Exception:
+                                return None
+                    return None
+
+                hx = extract_stat(home_c, "expectedGoals")
+                ax = extract_stat(away_c, "expectedGoals")
+
+                if hx is None:
+                    hx = round(0.55 * hg + 0.45 * team_xg_avg.get(ht, league_xg_avg), 2)
+                if ax is None:
+                    ax = round(0.55 * ag + 0.45 * team_xg_avg.get(at, league_xg_avg), 2)
 
                 new_rows.append({
                     "season": yr, "date": d_str, "team": ht, "opponent": at, "venue": "Home",
@@ -252,7 +270,7 @@ def crawl_and_merge_fbref(old_csv_path, new_csv_path):
             continue
 
     if not new_rows:
-        return False, "Máy chủ Understat đang giới hạn truy cập từ IP đám mây. Bạn có thể chạy script trên máy tính để tải CSV lên GitHub."
+        return False, 0
 
     new_df = pd.DataFrame(new_rows)
     combined = pd.concat([old_df, new_df], ignore_index=True)
@@ -265,67 +283,7 @@ def crawl_and_merge_fbref(old_csv_path, new_csv_path):
             combined[col] = combined.groupby("team")[col].transform(lambda s: s.fillna(s.median())).fillna(combined[col].median())
 
     combined.to_csv(new_csv_path, index=False)
-    added_matches = (len(combined) - len(old_df)) // 2
-    return True, f"Đã cào tự động {added_matches} trận thực tế mới! Tổng: {len(combined):,} dòng."
-
-@st.cache_data
-def load_and_process_data(file_path):
-    df = pd.read_csv(file_path)
-    df.columns = df.columns.str.strip().str.lower()
-    df = df.drop(columns=["unnamed: 0", "notes"], errors="ignore")
-
-    df["team"] = df["team"].astype(str).str.strip().replace(TEAM_NAME_MAP)
-    df["opponent"] = df["opponent"].astype(str).str.strip().replace(TEAM_NAME_MAP)
-
-    df["venue"] = df["venue"].astype(str).str.strip().str.lower().replace({
-        "home": "Home", "h": "Home", "away": "Away", "a": "Away"
-    })
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
-
-    for col in ["xg", "xga", "gf", "ga", "sh", "sot", "season"]:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-
-    df = df.dropna(subset=["team", "venue", "opponent", "xg", "xga", "gf", "ga", "date"]).copy()
-    df = df[df["venue"].isin(["Home", "Away"])].sort_values(["date", "team"]).reset_index(drop=True)
-
-    df["is_home"] = (df["venue"] == "Home").astype(int)
-
-    df["xg_avg5"] = df.groupby("team")["xg"].transform(lambda x: x.shift(1).rolling(5, min_periods=1).mean())
-    df["xga_avg5"] = df.groupby("team")["xga"].transform(lambda x: x.shift(1).rolling(5, min_periods=1).mean())
-    df["goals_avg5"] = df.groupby("team")["gf"].transform(lambda x: x.shift(1).rolling(5, min_periods=1).mean())
-    df["goals_against_avg5"] = df.groupby("team")["ga"].transform(lambda x: x.shift(1).rolling(5, min_periods=1).mean())
-    df["sot_avg5"] = df.groupby("team")["sot"].transform(lambda x: x.shift(1).rolling(5, min_periods=1).mean())
-    df["xg_avg3"] = df.groupby("team")["xg"].transform(lambda x: x.shift(1).rolling(3, min_periods=1).mean())
-    df["net_xg_avg5"] = df["xg_avg5"] - df["xga_avg5"]
-
-    df["matches_seen"] = df.groupby("team").cumcount()
-    df["short_history"] = (df["matches_seen"] < 5).astype(int)
-
-    opp_df = df[["date", "team", "opponent", "xg_avg5", "xga_avg5", "matches_seen", "short_history"]].copy()
-    opp_df = opp_df.rename(columns={
-        "team": "opponent", "opponent": "team",
-        "xg_avg5": "opponent_xg_avg5", "xga_avg5": "opponent_xga_avg5",
-        "matches_seen": "opponent_matches_seen", "short_history": "opponent_short_history"
-    })
-
-    final_df = pd.merge(df, opp_df, on=["date", "team", "opponent"], how="left")
-    final_df["attack_defense_index"] = (final_df["xg_avg5"] + final_df["opponent_xga_avg5"]) / 2
-
-    feature_cols = [
-        "xg_avg5", "xga_avg5", "goals_avg5", "goals_against_avg5", "sot_avg5", "xg_avg3",
-        "opponent_xg_avg5", "opponent_xga_avg5", "is_home", "matches_seen", "short_history",
-        "opponent_matches_seen", "opponent_short_history", "net_xg_avg5", "attack_defense_index"
-    ]
-
-    max_season = final_df["season"].max()
-    train_mask = final_df["season"] < max_season
-    train_medians = final_df.loc[train_mask, feature_cols].median() if train_mask.any() else final_df[feature_cols].median()
-
-    for col in feature_cols:
-        final_df[col] = final_df[col].fillna(train_medians[col])
-
-    return final_df, feature_cols
+    return True, (len(combined) - len(old_df)) // 2
 
 # Khối 3: Huấn luyện mô hình ML & Hàm mô phỏng Poisson
 @st.cache_resource
@@ -414,14 +372,18 @@ def calculate_outcomes(matrix):
     away_win = np.triu(matrix, 1).sum()
     total = home_win + draw + away_win
     return home_win / total, draw / total, away_win / total
-# Khối 4: Thanh Sidebar & Trang 1 (Tổng quan hệ thống)
+# Khối 4: Thanh Sidebar (Tự động đồng bộ dữ liệu khi mở web) & Trang 1
 st.sidebar.title("⚽ LaLiga xG Predictor")
 st.sidebar.caption("Machine Learning & Poisson Analytics")
 st.sidebar.markdown("---")
 
-dataset_options = ["📁 Dữ liệu chuẩn Báo cáo (Gốc)"]
+# Tự động đồng bộ dữ liệu thực tế mới nhất ngay khi mở web
+sync_ok, added_count = auto_sync_laliga_data(DATA_FILE, NEW_DATA_FILE)
+
+dataset_options = []
 if NEW_DATA_FILE.exists():
-    dataset_options.append("🆕 Dữ liệu mới cập nhật (Mở rộng)")
+    dataset_options.append("🆕 Dữ liệu mới tự động cập nhật (Mở rộng)")
+dataset_options.append("📁 Dữ liệu chuẩn Báo cáo (4.700 dòng gốc)")
 
 selected_dataset = st.sidebar.selectbox("CHỌN BỘ DỮ LIỆU", dataset_options)
 ACTIVE_DATA_FILE = NEW_DATA_FILE if selected_dataset.startswith("🆕") else DATA_FILE
@@ -448,57 +410,10 @@ try:
         teams = sorted(df["team"].unique().tolist())
 
     st.sidebar.success(f"Mô hình tối ưu: **{best_model_name}**")
+    if sync_ok and added_count > 0:
+        st.sidebar.info(f"🔄 Đã tự động đồng bộ thêm **{added_count}** trận mới nhất!")
     st.sidebar.caption(f"Tệp: `{ACTIVE_DATA_FILE.name}` | Test: **{test_season}**")
 
-    # Nút cào tự động từ FBref & Form nhập tay trận mới
-    with st.sidebar.expander("🔄 Cập nhật dữ liệu mới"):
-        if st.button("🌐 Cào dữ liệu mới từ FBref", use_container_width=True):
-            with st.spinner("Đang kết nối FBref để tải dữ liệu mới..."):
-                ok, msg = crawl_and_merge_fbref(DATA_FILE, NEW_DATA_FILE)
-                if ok:
-                    st.success(msg)
-                    st.cache_data.clear()
-                    st.cache_resource.clear()
-                    st.rerun()
-                else:
-                    st.warning(msg)
-
-        with st.form("add_match_form"):
-            st.caption("Hoặc nhập tay kết quả trận vừa đá:")
-            m_date = st.date_input("Ngày thi đấu")
-            m_home = st.selectbox("Đội chủ nhà", teams, key="new_h")
-            m_away = st.selectbox("Đội khách", teams, key="new_a")
-            c_gf, c_ga = st.columns(2)
-            m_hgf = c_gf.number_input("Bàn thắng Nhà", min_value=0, max_value=15, value=1)
-            m_agf = c_ga.number_input("Bàn thắng Khách", min_value=0, max_value=15, value=0)
-            c_xg1, c_xg2 = st.columns(2)
-            m_hxg = c_xg1.number_input("xG Nhà", min_value=0.0, max_value=10.0, value=1.45, step=0.05)
-            m_axg = c_xg2.number_input("xG Khách", min_value=0.0, max_value=10.0, value=0.85, step=0.05)
-
-            if st.form_submit_button("💾 Lưu vào dữ liệu mới"):
-                if m_home == m_away:
-                    st.error("Hai đội phải khác nhau!")
-                else:
-                    base_df = pd.read_csv(NEW_DATA_FILE if NEW_DATA_FILE.exists() else DATA_FILE)
-                    base_df.columns = base_df.columns.str.strip().str.lower()
-                    h_res = "W" if m_hgf > m_agf else ("L" if m_hgf < m_agf else "D")
-                    a_res = "W" if m_agf > m_hgf else ("L" if m_agf < m_hgf else "D")
-
-                    new_rows = pd.DataFrame([
-                        {"season": m_date.year, "date": str(m_date), "team": m_home, "opponent": m_away,
-                         "venue": "Home", "result": h_res, "gf": m_hgf, "ga": m_agf, "xg": m_hxg, "xga": m_axg,
-                         "sh": base_df[base_df["team"] == m_home]["sh"].median(),
-                         "sot": base_df[base_df["team"] == m_home]["sot"].median()},
-                        {"season": m_date.year, "date": str(m_date), "team": m_away, "opponent": m_home,
-                         "venue": "Away", "result": a_res, "gf": m_agf, "ga": m_hgf, "xg": m_axg, "xga": m_hxg,
-                         "sh": base_df[base_df["team"] == m_away]["sh"].median(),
-                         "sot": base_df[base_df["team"] == m_away]["sot"].median()}
-                    ])
-                    updated = pd.concat([base_df, new_rows], ignore_index=True)
-                    updated.to_csv(NEW_DATA_FILE, index=False)
-                    st.cache_data.clear()
-                    st.cache_resource.clear()
-                    st.rerun()
 
     # ------------------ TRANG 1: TỔNG QUAN ------------------
     if page == "🏠 Tổng quan hệ thống":
