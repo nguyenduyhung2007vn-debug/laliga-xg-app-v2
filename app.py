@@ -126,6 +126,16 @@ h1, h2, h3, h1 *, h2 *, h3 * {
     color: #f8fafc !important;
     line-height: 1.6;
 }
+[data-testid="stMetricDelta"] {
+    background-color: #1e293b !important;
+    padding: 4px 10px !important;
+    border-radius: 6px !important;
+    width: fit-content !important;
+}
+[data-testid="stMetricDelta"] * {
+    color: #fbbf24 !important;
+    font-weight: 700 !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
