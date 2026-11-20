@@ -674,7 +674,7 @@ try:
         st.dataframe(display_df, use_container_width=True)
 
     # ------------------ TRANG 4: MODEL EVALUATION ------------------
-        elif page == "🤖 Đánh giá Mô hình Học máy":
+    elif page == "🤖 Đánh giá Mô hình Học máy":
         st.title("🤖 THỰC NGHIỆM VÀ ĐÁNH GIÁ ĐỘ CHÍNH XÁC MÔ HÌNH")
         st.markdown(f"Kết quả kiểm thử độc lập trên **mùa giải {test_season}** ({len(X_test)} bản ghi đội–trận, tương ứng {len(X_test)//2} trận đấu).")
 
